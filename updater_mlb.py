@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import os
 import subprocess
 
-# Diccionario Inverso: MLB Stats API -> Código de 3 letras de Retrosheet
+# --- Mapeo de equipos ---
 MAPEO_INVERSO = {
     'Arizona Diamondbacks': 'ARI', 'Atlanta Braves': 'ATL', 'Baltimore Orioles': 'BAL',
     'Boston Red Sox': 'BOS', 'Chicago Cubs': 'CHN', 'Chicago White Sox': 'CHA',
@@ -17,77 +17,74 @@ MAPEO_INVERSO = {
     'Seattle Mariners': 'SEA', 'St. Louis Cardinals': 'SLN', 'Tampa Bay Rays': 'TBA',
     'Texas Rangers': 'TEX', 'Toronto Blue Jays': 'TOR', 'Washington Nationals': 'WAS'
 }
-
-def actualizar_cerebro_diario():
-    # Calcular la fecha de ayer
-    ayer = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-    print(f"📡 Escaneando resultados de la MLB del {ayer}...")
-
-    # Extraer partidos del calendario oficial
-    try:
-        juegos = statsapi.schedule(date=ayer)
-    except Exception as e:
-        print(f"❌ Error al conectar con MLB-StatsAPI: {e}")
-        return
-
-    if not juegos:
-        print("⚾ No hubo partidos ayer (o es temporada baja). El Cerebro se mantiene intacto.")
-        return
-
-    nuevos_datos = []
+def calcular_kelly(probabilidad_ia, cuota, bankroll):
+    p = probabilidad_ia / 100.0 
+    fraccion_kelly = ((p * cuota) - 1) / (cuota - 1)
+    fraccion_segura = fraccion_kelly * 0.25 
+    if fraccion_segura > 0.05: fraccion_segura = 0.05
+    if fraccion_segura <= 0: return 0.0
     
-    for j in juegos:
-        if j['status'] != 'Final':
-            continue # Solo nos importan los partidos que ya terminaron
-
-        visita = MAPEO_INVERSO.get(j['away_name'], 'UNK')
-        local = MAPEO_INVERSO.get(j['home_name'], 'UNK')
+    apuesta = round(bankroll * fraccion_segura, 2)
+    
+    # 🛑 NUEVA REGLA QUANT: Filtro de Apuesta Mínima Rushbet
+    if apuesta < 500:
+        return 0.0 
         
-        # Extraemos carreras
-        carreras_v = j.get('away_score', 0)
-        carreras_l = j.get('home_score', 0)
-        
-        # Extraemos los nombres de los pitchers que abrieron/ganaron para trackear su efectividad
-        pitcher_v = j.get('away_probable_pitcher', 'Desconocido')
-        pitcher_l = j.get('home_probable_pitcher', 'Desconocido')
+    return apuesta
+def auditar_apuestas():
+    archivo_ledger = 'ledger_simulacion.csv'
+    archivo_hist = 'mlb_historico.csv'
+    
+    if not os.path.exists(archivo_ledger) or not os.path.exists(archivo_hist):
+        return
 
-        fila = {
-            'Fecha': datetime.strptime(ayer, '%Y-%m-%d').strftime('%Y-%m-%d'),
-            'Visita': visita,
-            'Local': local,
-            'Carreras_Visita': carreras_v,
-            'Carreras_Local': carreras_l,
-            'Hits_Visita': 0, # Variable obsoleta para el V2, rellenamos con 0
-            'HR_Visita': 0,   # Variable obsoleta para el V2, rellenamos con 0
-            'Hits_Local': 0,  # Variable obsoleta para el V2, rellenamos con 0
-            'HR_Local': 0,    # Variable obsoleta para el V2, rellenamos con 0
-            'Pitcher_Visita': pitcher_v,
-            'Pitcher_Local': pitcher_l,
-            'Gana_Local': 1 if carreras_l > carreras_v else 0
-        }
-        nuevos_datos.append(fila)
+    print("⚖️ Auditando resultados y liquidando apuestas...")
+    df_ledger = pd.read_csv(archivo_ledger)
+    df_hist = pd.read_csv(archivo_hist)
+    
+    # Solo procesamos las que están 'Pendiente'
+    for i, fila in df_ledger.iterrows():
+        if fila['Estado'] == 'Pendiente':
+            # Buscamos el partido en el histórico
+            partido = df_hist[
+                (df_hist['Fecha'] == fila['Fecha']) & 
+                ((df_hist['Visita'] == fila['Visita']) | (df_hist['Local'] == fila['Local']))
+            ]
+            
+            if not partido.empty:
+                ganador_real = partido.iloc[0]['Local'] if partido.iloc[0]['Gana_Local'] == 1 else partido.iloc[0]['Visita']
+                equipo_apostado = fila['Apuesta_A']
+                
+                # Mapear nombre completo a código si es necesario
+                cod_apostado = MAPEO_INVERSO.get(equipo_apostado, equipo_apostado)
+                
+                if cod_apostado == ganador_real:
+                    df_ledger.at[i, 'Estado'] = 'Ganada'
+                    df_ledger.at[i, 'Beneficio_Neto'] = fila['Ganancia_Potencial_USD']
+                else:
+                    df_ledger.at[i, 'Estado'] = 'Perdida'
+                    df_ledger.at[i, 'Beneficio_Neto'] = -fila['Inversion_USD']
 
-    if nuevos_datos:
-        archivo = 'mlb_historico.csv'
-        if os.path.exists(archivo):
-            df_historico = pd.read_csv(archivo)
-            df_nuevos = pd.DataFrame(nuevos_datos)
-            
-            # Concatenar y asegurar que no haya duplicados si el script se corre por accidente dos veces
-            df_actualizado = pd.concat([df_historico, df_nuevos], ignore_index=True)
-            df_actualizado = df_actualizado.drop_duplicates(subset=['Fecha', 'Visita', 'Local'])
-            
-            # Sobrescribir la base de datos maestra
-            df_actualizado.to_csv(archivo, index=False)
-            print(f"✅ ¡Éxito! Se añadieron {len(df_nuevos)} partidos al dataset.")
-            
-            # MAGIA MLOps: Mandar a reentrenar el modelo automáticamente desde aquí
-            print("⚙️ Inyectando nuevos datos y regenerando los pesos del XGBoost...")
-            subprocess.run(["python", "train_mlb.py"])
-        else:
-            print(f"❌ No se encontró la base maestra {archivo}.")
-    else:
-        print("⚾ No se encontraron resultados procesables de ayer.")
+    df_ledger.to_csv(archivo_ledger, index=False)
+    
+    # --- GENERAR PLANILLA SEMANAL ---
+    print("\n" + "="*40)
+    print("📊 PLANILLA DE RENDIMIENTO (Paper Trading)")
+    total_invertido = df_ledger['Inversion_USD'].sum()
+    balance_neto = df_ledger['Beneficio_Neto'].sum()
+    roi = (balance_neto / total_invertido) * 100 if total_invertido > 0 else 0
+    
+    print(f"💰 Balance Total: {balance_neto:+.2f} COP")
+    print(f"📈 ROI: {roi:.2f}%")
+    print(f"✅ Aciertos: {len(df_ledger[df_ledger['Estado'] == 'Ganada'])}")
+    print(f"❌ Fallos: {len(df_ledger[df_ledger['Estado'] == 'Perdida'])}")
+    print("="*40 + "\n")
+
+# ... (Mantén el resto de tu función actualizar_cerebro_diario igual) ...
 
 if __name__ == "__main__":
-    actualizar_cerebro_diario()
+    # 1. Actualizar datos de la MLB
+    # actualizar_cerebro_diario() # (Ya lo tienes configurado)
+    
+    # 2. Auditar apuestas de ayer
+    auditar_apuestas()
