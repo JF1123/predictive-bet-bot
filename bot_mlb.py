@@ -37,7 +37,14 @@ def calcular_kelly(probabilidad_ia, cuota, bankroll):
     fraccion_segura = fraccion_kelly * 0.25 
     if fraccion_segura > 0.05: fraccion_segura = 0.05
     if fraccion_segura <= 0: return 0.0
-    return round(bankroll * fraccion_segura, 2)
+    
+    apuesta = round(bankroll * fraccion_segura, 2)
+    
+    # 🛑 NUEVA REGLA QUANT: Filtro de Apuesta Mínima Rushbet (500 COP)
+    if apuesta < 500:
+        return 0.0 
+        
+    return apuesta
 
 def guardar_apuesta_simulada(fecha, visita, local, equipo_apuesta, cuota, casa, inversion, prob_ia):
     # Calcular la ganancia potencial
@@ -50,8 +57,8 @@ def guardar_apuesta_simulada(fecha, visita, local, equipo_apuesta, cuota, casa, 
         'Apuesta_A': equipo_apuesta,
         'Cuota': cuota,
         'Casa_Apuestas': casa,
-        'Inversion_USD': inversion,
-        'Ganancia_Potencial_USD': ganancia_potencial,
+        'Inversion_COP': inversion,
+        'Ganancia_Potencial_COP': ganancia_potencial,
         'Prob_IA_%': prob_ia,
         'Estado': 'Pendiente', # Cambiará a Ganada/Perdida con el Updater
         'Beneficio_Neto': 0.0
@@ -122,7 +129,7 @@ def escanear_mercado_mlb():
     stats = df_historico.mean(numeric_only=True)
     hoy = datetime.now().strftime('%Y-%m-%d')
 
-    print(f"\n💵 CAPITAL VIRTUAL: ${CAPITAL_TOTAL} USD")
+    print(f"\n💵 CAPITAL VIRTUAL: ${CAPITAL_TOTAL} COP")
     print("🤖 Generando simulaciones de Paper Trading...\n")
     print("=" * 60)
     
@@ -134,7 +141,7 @@ def escanear_mercado_mlb():
         
         casa_nombre, cuota_V, cuota_L = buscar_cuota_preferida(partido['bookmakers'], equipo_visita, equipo_local)
         
-        # Inyectar datos promedio para la simulación rápida (El V2 necesita 8 features)
+        # Inyectar datos promedio para la simulación rápida
         datos_pred = pd.DataFrame([{
             'Ofensiva_L': stats['Carreras_Local'], 'Ofensiva_V': stats['Carreras_Visita'],
             'Defensa_L': stats['Carreras_Visita'], 'Defensa_V': stats['Carreras_Local'],
@@ -154,18 +161,18 @@ def escanear_mercado_mlb():
         if cuota_V > 0 and (prob_Visita/100) > (1/cuota_V):
             apuesta = calcular_kelly(prob_Visita, cuota_V, CAPITAL_TOTAL)
             if apuesta > 0:
-                print(f"✅ VALOR VIRTUAL: Invertir ${apuesta} en {equipo_visita}")
+                print(f"✅ VALOR VIRTUAL: Invertir ${apuesta} COP en {equipo_visita}")
                 guardar_apuesta_simulada(hoy, equipo_visita, equipo_local, equipo_visita, cuota_V, casa_nombre, apuesta, prob_Visita)
                 valor_encontrado = True
                 
         if cuota_L > 0 and (prob_Local/100) > (1/cuota_L):
             apuesta = calcular_kelly(prob_Local, cuota_L, CAPITAL_TOTAL)
             if apuesta > 0:
-                print(f"✅ VALOR VIRTUAL: Invertir ${apuesta} en {equipo_local}")
+                print(f"✅ VALOR VIRTUAL: Invertir ${apuesta} COP en {equipo_local}")
                 guardar_apuesta_simulada(hoy, equipo_visita, equipo_local, equipo_local, cuota_L, casa_nombre, apuesta, prob_Local)
                 valor_encontrado = True
             
-        if not valor_encontrado: print("⛔ Sin ventaja matemática.")
+        if not valor_encontrado: print("⛔ Sin ventaja matemática o apuesta menor al mínimo.")
         print("-" * 60)
 
 if __name__ == "__main__":
