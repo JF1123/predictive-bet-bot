@@ -9,14 +9,16 @@ from datetime import datetime, timedelta
 warnings.filterwarnings('ignore')
 
 # --- CONFIGURACIÓN QUANT ---
-API_KEY = '059df6f2341b819b810c4fcab8de323e' # ¡No olvides poner tu llave real!
+API_KEY = '059df6f2341b819b810c4fcab8de323e'
 DEPORTE = 'baseball_mlb' 
 MERCADO = 'h2h' 
-REGION = 'us,eu' # Añadimos 'eu' para acceder a Unibet (Proxy de Rushbet) y Pinnacle
+REGION = 'us,eu'
 ARCHIVO_CACHE = 'cache_mlb.json'
 ARCHIVO_LEDGER = 'ledger_simulacion.csv'
 HORAS_VIGENCIA = 6
 CAPITAL_TOTAL = 20000.00 
+# TU URL DE DISCORD
+DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1493025221370843317/1AujEKaPM8t_17ZbrRDLf3iAftZ1D1H3T72eDWvIo91Ub27Bx4_iCW2lavHOd0JBp1Q_'
 
 MAPEO_EQUIPOS = {
     'Arizona Diamondbacks': 'ARI', 'Atlanta Braves': 'ATL', 'Baltimore Orioles': 'BAL',
@@ -31,6 +33,17 @@ MAPEO_EQUIPOS = {
     'Texas Rangers': 'TEX', 'Toronto Blue Jays': 'TOR', 'Washington Nationals': 'WAS'
 }
 
+def enviar_alerta_discord(mensaje):
+    datos = {
+        "content": mensaje,
+        "username": "Enjambre Quant MLB",
+        "avatar_url": "https://cdn-icons-png.flaticon.com/512/2043/2043869.png"
+    }
+    try:
+        requests.post(DISCORD_WEBHOOK_URL, json=datos)
+    except Exception as e:
+        print(f"⚠️ Error enviando a Discord: {e}")
+
 def calcular_kelly(probabilidad_ia, cuota, bankroll):
     p = probabilidad_ia / 100.0 
     fraccion_kelly = ((p * cuota) - 1) / (cuota - 1)
@@ -39,34 +52,20 @@ def calcular_kelly(probabilidad_ia, cuota, bankroll):
     if fraccion_segura <= 0: return 0.0
     
     apuesta = round(bankroll * fraccion_segura, 2)
-    
-    # 🛑 NUEVA REGLA QUANT: Filtro de Apuesta Mínima Rushbet (500 COP)
-    if apuesta < 500:
-        return 0.0 
-        
+    if apuesta < 500: return 0.0 
     return apuesta
 
 def guardar_apuesta_simulada(fecha, visita, local, equipo_apuesta, cuota, casa, inversion, prob_ia):
-    # Calcular la ganancia potencial
     ganancia_potencial = round((inversion * cuota) - inversion, 2)
-    
     nueva_apuesta = pd.DataFrame([{
-        'Fecha': fecha,
-        'Visita': visita,
-        'Local': local,
-        'Apuesta_A': equipo_apuesta,
-        'Cuota': cuota,
-        'Casa_Apuestas': casa,
-        'Inversion_COP': inversion,
+        'Fecha': fecha, 'Visita': visita, 'Local': local,
+        'Apuesta_A': equipo_apuesta, 'Cuota': cuota,
+        'Casa_Apuestas': casa, 'Inversion_COP': inversion,
         'Ganancia_Potencial_COP': ganancia_potencial,
-        'Prob_IA_%': prob_ia,
-        'Estado': 'Pendiente', # Cambiará a Ganada/Perdida con el Updater
-        'Beneficio_Neto': 0.0
+        'Prob_IA_%': prob_ia, 'Estado': 'Pendiente', 'Beneficio_Neto': 0.0
     }])
-    
     if os.path.exists(ARCHIVO_LEDGER):
         df_ledger = pd.read_csv(ARCHIVO_LEDGER)
-        # Evitar duplicados si corremos el bot varias veces el mismo día
         duplicado = df_ledger[(df_ledger['Fecha'] == fecha) & (df_ledger['Apuesta_A'] == equipo_apuesta)]
         if duplicado.empty:
             df_ledger = pd.concat([df_ledger, nueva_apuesta], ignore_index=True)
@@ -78,23 +77,17 @@ def obtener_datos_api():
     if os.path.exists(ARCHIVO_CACHE):
         tiempo_modificacion = datetime.fromtimestamp(os.path.getmtime(ARCHIVO_CACHE))
         if datetime.now() - tiempo_modificacion < timedelta(hours=HORAS_VIGENCIA):
-            with open(ARCHIVO_CACHE, 'r') as f:
-                return json.load(f)
-
+            with open(ARCHIVO_CACHE, 'r') as f: return json.load(f)
     url = f'https://api.the-odds-api.com/v4/sports/{DEPORTE}/odds/?apiKey={API_KEY}&regions={REGION}&markets={MERCADO}'
     respuesta = requests.get(url)
-    
     if respuesta.status_code == 200:
         datos = respuesta.json()
-        with open(ARCHIVO_CACHE, 'w') as f:
-            json.dump(datos, f)
+        with open(ARCHIVO_CACHE, 'w') as f: json.dump(datos, f)
         return datos
     return None
 
 def buscar_cuota_preferida(bookmakers, equipo_visita, equipo_local):
-    # Buscamos primero Unibet (proxy de Rushbet/Kambi), BetRivers, Pinnacle o nos quedamos con la primera que haya
     casas_preferidas = ['unibet', 'betrivers', 'pinnacle', 'bet365', 'fanduel']
-    
     for preferida in casas_preferidas:
         for bookie in bookmakers:
             if preferida.lower() in bookie['key'].lower():
@@ -104,8 +97,6 @@ def buscar_cuota_preferida(bookmakers, equipo_visita, equipo_local):
                     if op['name'] == equipo_visita: v = op['price']
                     elif op['name'] == equipo_local: l = op['price']
                 return bookie['title'], v, l
-                
-    # Si no hay ninguna preferida, tomamos la primera disponible
     bookie = bookmakers[0]
     cuotas = bookie['markets'][0]['outcomes']
     v, l = 0.0, 0.0
@@ -119,61 +110,41 @@ def escanear_mercado_mlb():
         modelo = joblib.load('oraculo_mlb_xgboost.pkl')
         df_historico = pd.read_csv('mlb_historico.csv')
     except:
-        print("❌ Faltan archivos maestros. Ejecuta el minero y el train primero.")
+        print("❌ Error de archivos.")
         return
 
     partidos = obtener_datos_api()
     if not partidos: return
-    
-    # Calcular promedios globales rápidos para inyectar al modelo
     stats = df_historico.mean(numeric_only=True)
     hoy = datetime.now().strftime('%Y-%m-%d')
 
     print(f"\n💵 CAPITAL VIRTUAL: ${CAPITAL_TOTAL} COP")
-    print("🤖 Generando simulaciones de Paper Trading...\n")
-    print("=" * 60)
-    
+    enviar_alerta_discord(f"🚀 **Enjambre Iniciado** | Capital: ${CAPITAL_TOTAL} COP | Escaneando MLB...")
+
     for partido in partidos:
         if not partido['bookmakers']: continue
-            
-        equipo_visita = partido['away_team']
-        equipo_local = partido['home_team']
+        eq_v, eq_l = partido['away_team'], partido['home_team']
+        casa, c_v, c_l = buscar_cuota_preferida(partido['bookmakers'], eq_v, eq_l)
         
-        casa_nombre, cuota_V, cuota_L = buscar_cuota_preferida(partido['bookmakers'], equipo_visita, equipo_local)
+        datos_pred = pd.DataFrame([{'Ofensiva_L': stats['Carreras_Local'], 'Ofensiva_V': stats['Carreras_Visita'], 'Defensa_L': stats['Carreras_Visita'], 'Defensa_V': stats['Carreras_Local'], 'Racha_Ofensiva_L': stats['Carreras_Local'], 'Racha_Ofensiva_V': stats['Carreras_Visita'], 'Pitcher_L_ERA_Proxy': stats['Carreras_Visita'], 'Pitcher_V_ERA_Proxy': stats['Carreras_Local']}])
+        probs = modelo.predict_proba(datos_pred)[0]
+        p_v, p_l = round(probs[0] * 100, 1), round(probs[1] * 100, 1)
         
-        # Inyectar datos promedio para la simulación rápida
-        datos_pred = pd.DataFrame([{
-            'Ofensiva_L': stats['Carreras_Local'], 'Ofensiva_V': stats['Carreras_Visita'],
-            'Defensa_L': stats['Carreras_Visita'], 'Defensa_V': stats['Carreras_Local'],
-            'Racha_Ofensiva_L': stats['Carreras_Local'], 'Racha_Ofensiva_V': stats['Carreras_Visita'],
-            'Pitcher_L_ERA_Proxy': stats['Carreras_Visita'], 'Pitcher_V_ERA_Proxy': stats['Carreras_Local']
-        }])
+        print(f"⚾ {eq_v} @ {eq_l}")
+        val_f = False
+
+        # Lógica de apuesta
+        for eq, cuota, prob in [(eq_v, c_v, p_v), (eq_l, c_l, p_l)]:
+            if cuota > 0 and (prob/100) > (1/cuota):
+                apuesta = calcular_kelly(prob, cuota, CAPITAL_TOTAL)
+                if apuesta > 0:
+                    msg = f"✅ **VALOR ENCONTRADO**\n⚾ {eq_v} @ {eq_l}\n🎯 Apuesta: **${apuesta} COP** en **{eq}**\n🏦 Casa: {casa} (Cuota: {cuota})"
+                    print(msg.replace('**', ''))
+                    guardar_apuesta_simulada(hoy, eq_v, eq_l, eq, cuota, casa, apuesta, prob)
+                    enviar_alerta_discord(msg)
+                    val_f = True
         
-        probabilidades = modelo.predict_proba(datos_pred)[0]
-        prob_Visita = round(probabilidades[0] * 100, 1)
-        prob_Local = round(probabilidades[1] * 100, 1)
-        
-        print(f"⚾ {equipo_visita} @ {equipo_local}")
-        print(f"🏦 Casa: {casa_nombre} | Cuotas -> V: {cuota_V} | L: {cuota_L}")
-        
-        valor_encontrado = False
-        
-        if cuota_V > 0 and (prob_Visita/100) > (1/cuota_V):
-            apuesta = calcular_kelly(prob_Visita, cuota_V, CAPITAL_TOTAL)
-            if apuesta > 0:
-                print(f"✅ VALOR VIRTUAL: Invertir ${apuesta} COP en {equipo_visita}")
-                guardar_apuesta_simulada(hoy, equipo_visita, equipo_local, equipo_visita, cuota_V, casa_nombre, apuesta, prob_Visita)
-                valor_encontrado = True
-                
-        if cuota_L > 0 and (prob_Local/100) > (1/cuota_L):
-            apuesta = calcular_kelly(prob_Local, cuota_L, CAPITAL_TOTAL)
-            if apuesta > 0:
-                print(f"✅ VALOR VIRTUAL: Invertir ${apuesta} COP en {equipo_local}")
-                guardar_apuesta_simulada(hoy, equipo_visita, equipo_local, equipo_local, cuota_L, casa_nombre, apuesta, prob_Local)
-                valor_encontrado = True
-            
-        if not valor_encontrado: print("⛔ Sin ventaja matemática o apuesta menor al mínimo.")
-        print("-" * 60)
+        if not val_f: print("⛔ Sin ventaja.")
 
 if __name__ == "__main__":
     escanear_mercado_mlb()
