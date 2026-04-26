@@ -23,7 +23,7 @@ jobs:
       - name: Instalar Dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install requests pandas xgboost joblib scikit-learn
+          pip install requests pandas xgboost joblib scikit-learn MLB-StatsAPI
 
       - name: Ejecutar Auditoría y Bot
         run: |
