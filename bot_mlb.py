@@ -32,7 +32,56 @@ MAPEO_EQUIPOS = {
     'Seattle Mariners': 'SEA', 'St. Louis Cardinals': 'SLN', 'Tampa Bay Rays': 'TBA',
     'Texas Rangers': 'TEX', 'Toronto Blue Jays': 'TOR', 'Washington Nationals': 'WAS'
 }
+import pandas as pd
 
+def generar_resumen_financiero(ruta_csv='ledger_simulacion.csv', capital_inicial=20000.0):
+    try:
+        df = pd.read_csv(ruta_csv)
+    except FileNotFoundError:
+        return "🐝 **REPORTE DEL ENJAMBRE** 🐝\n\nArchivo de datos no encontrado.\n\n🎯 **APUESTAS PARA HOY:**\n"
+    
+    # Filtrar solo las apuestas que ya tienen resultado
+    df_completadas = df[df['Estado'].isin(['Ganada', 'Perdida', 'Empate'])]
+    
+    # Calcular Finanzas
+    beneficio_total = df_completadas['Beneficio_Neto'].sum()
+    capital_actual = capital_inicial + beneficio_total
+    roi = (beneficio_total / capital_inicial) * 100 if capital_inicial > 0 else 0
+    
+    # Historial de victorias
+    ganadas = len(df[df['Estado'] == 'Ganada'])
+    perdidas = len(df[df['Estado'] == 'Perdida'])
+    
+    # Extraer los resultados del último día completado ("ayer")
+    if not df_completadas.empty:
+        ultima_fecha = df_completadas['Fecha'].max()
+        resultados_ayer = df_completadas[df_completadas['Fecha'] == ultima_fecha]
+        
+        texto_resultados = f"🏟️ **RESULTADOS DEL {ultima_fecha}:**\n"
+        for _, row in resultados_ayer.iterrows():
+            if row['Estado'] == 'Ganada':
+                icono = "✅ GANADA"
+            elif row['Estado'] == 'Perdida':
+                icono = "❌ PERDIDA"
+            else:
+                icono = "➖ EMPATE"
+                
+            signo = "+" if row['Beneficio_Neto'] > 0 else ""
+            texto_resultados += f"• {row['Visita']} vs {row['Local']}: {icono} ({signo}${row['Beneficio_Neto']:.0f})\n"
+    else:
+        texto_resultados = "🏟️ **RESULTADOS DE AYER:**\n• Aún no hay partidos liquidados en el registro.\n"
+        
+    # Ensamblar el mensaje final
+    mensaje = (
+        f"🐝 **REPORTE DEL ENJAMBRE** 🐝\n\n"
+        f"📈 **BALANCE GENERAL:**\n"
+        f"• Capital Inicial: ${capital_inicial:,.0f} COP\n"
+        f"• Capital Actual: ${capital_actual:,.0f} COP (**{roi:+.1f}%**)\n"
+        f"• Historial: {ganadas} Ganadas / {perdidas} Perdidas\n\n"
+        f"{texto_resultados}\n"
+        f"🎯 **APUESTAS PARA HOY:**\n"
+    )
+    return mensaje
 def enviar_alerta_discord(mensaje):
     datos = {
         "content": mensaje,
@@ -119,7 +168,11 @@ def escanear_mercado_mlb():
     hoy = datetime.now().strftime('%Y-%m-%d')
 
     print(f"\n💵 CAPITAL VIRTUAL: ${CAPITAL_TOTAL} COP")
-    enviar_alerta_discord(f"🚀 **Enjambre Iniciado** | Capital: ${CAPITAL_TOTAL} COP | Escaneando MLB...")
+    print("🤖 Generando simulaciones y buscando valor...")
+
+    # 1. CREAMOS EL ENCABEZADO FINANCIERO DEL MENSAJE
+    mensaje_discord = generar_resumen_financiero(ARCHIVO_LEDGER, CAPITAL_TOTAL)
+    apuestas_encontradas = 0
 
     for partido in partidos:
         if not partido['bookmakers']: continue
@@ -138,13 +191,22 @@ def escanear_mercado_mlb():
             if cuota > 0 and (prob/100) > (1/cuota):
                 apuesta = calcular_kelly(prob, cuota, CAPITAL_TOTAL)
                 if apuesta > 0:
-                    msg = f"✅ **VALOR ENCONTRADO**\n⚾ {eq_v} @ {eq_l}\n🎯 Apuesta: **${apuesta} COP** en **{eq}**\n🏦 Casa: {casa} (Cuota: {cuota})"
-                    print(msg.replace('**', ''))
+                    # 2. AGREGAMOS CADA APUESTA AL MENSAJE CONSOLIDADO
+                    texto_apuesta = f"⚾ **{eq_v} vs {eq_l}**\n👉 Invertir: **${apuesta:,.0f} COP** en **{eq}**\n🏦 Casa: {casa} (Cuota: {cuota})\n"
+                    print(f"✅ VALOR ENCONTRADO: {eq} a cuota {cuota}")
+                    
                     guardar_apuesta_simulada(hoy, eq_v, eq_l, eq, cuota, casa, apuesta, prob)
-                    enviar_alerta_discord(msg)
+                    mensaje_discord += texto_apuesta + "\n"
+                    apuestas_encontradas += 1
                     val_f = True
         
         if not val_f: print("⛔ Sin ventaja.")
+
+    # 3. SI NO HAY APUESTAS, LO AVISAMOS. LUEGO ENVIAMOS EL MENSAJE ÚNICO.
+    if apuestas_encontradas == 0:
+        mensaje_discord += "😴 El modelo no encontró ventajas matemáticas hoy. Capital protegido."
+        
+    enviar_alerta_discord(mensaje_discord)
 
 if __name__ == "__main__":
     escanear_mercado_mlb()
