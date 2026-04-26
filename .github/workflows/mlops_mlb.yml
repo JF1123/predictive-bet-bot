@@ -1,42 +1,39 @@
-name: MLB Quant MLOps
+name: Enjambre Quant MLB Diario
 
-# ¿Cuándo se ejecutará este script?
 on:
   schedule:
-    # Se ejecuta todos los días a las 11:00 AM UTC (Aprox 6:00 AM / 7:00 AM en América)
-    - cron: '0 11 * * *' 
-  workflow_dispatch: # Esto te permite ejecutarlo manualmente desde la web de GitHub con un botón
+    - cron: '0 13 * * *' # Corre todos los días a las 8:00 AM hora Colombia (13:00 UTC)
+  workflow_dispatch: # Permite que lo actives tú manualmente desde la web
+
+permissions:
+  contents: write # FUNDAMENTAL: Da permiso para guardar el CSV
 
 jobs:
-  actualizar_y_entrenar:
+  build:
     runs-on: ubuntu-latest
-    
-    # Permiso vital: le damos poder al bot para modificar y guardar archivos en tu repositorio
-    permissions:
-      contents: write 
-
     steps:
-    - name: 📥 Clonar el repositorio
-      uses: actions/checkout@v4
-      
-    - name: 🐍 Configurar entorno Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
-        
-    - name: 📦 Instalar librerías Quant
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        
-    - name: ⚙️ Ejecutar Auto-Ingesta y Reentrenamiento
-      run: python updater_mlb.py
-        
-    - name: 💾 Guardar el nuevo conocimiento en la bóveda
-      run: |
-        git config --global user.name 'github-actions[bot]'
-        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-        git add mlb_historico.csv oraculo_mlb_xgboost.pkl
-        # El [skip ci] evita que GitHub Actions entre en un bucle infinito
-        git commit -m "🤖 MLOps: Auto-ingesta y reentrenamiento diario completado [skip ci]" || echo "Sin cambios nuevos para guardar hoy."
-        git push
+      - name: Descargar Código
+        uses: actions/checkout@v3
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Instalar Dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas xgboost joblib scikit-learn
+
+      - name: Ejecutar Auditoría y Bot
+        run: |
+          python updater_mlb.py || echo "No hubo partidos ayer"
+          python bot_mlb.py
+
+      - name: Guardar Progreso en la Nube
+        run: |
+          git config --global user.name "Enjambre-Bot"
+          git config --global user.email "bot@enjambre.com"
+          git add ledger_simulacion.csv cache_mlb.json
+          git commit -m "Actualización diaria del Enjambre [skip ci]" || echo "Nada nuevo que guardar"
+          git push
